@@ -11,14 +11,22 @@ function _objective_function(w::Array{Float64,1}, ḡ::Array{Float64,1},
 
 
     # TODO: This version of the objective function includes the barrier term, and the penalty terms -
-    f = w'*(Σ̂*w) + (1/(2*ρ))*((sum(w) - 1.0)^2 + (transpose(ḡ)*w - R)^2) - (1/μ)*sum(_safe_log.(w));
+    # quadratic variance term (scalar)
+    quad = dot(w, Σ̂ * w)
 
-    # TODO: This version of the objective function does NOT have the barrier term
-    # f = w'*(Σ̂*w) + (1/(2*ρ))*((sum(w) - 1.0)^2 + (transpose(ḡ)*w - R)^2);
+    # penalty for equality constraints (scalar)
+    penalty = (1.0 / (2.0 * ρ)) * ((sum(w) - 1.0)^2 + (dot(ḡ, w) - R)^2)
 
-
-    return f;
+    if include_barrier
+        barrier = - (1.0 / μ) * sum(_safe_log.(w))
+        return quad + penalty + barrier
+    else
+        return quad + penalty
+    end
 end
+    
+    f = w'*(Σ̂*w) + (1/(2*ρ))*((sum(w) - 1.0)^2 + (transpose(ḡ)*w - R)^2);
+ 
 
 """
     function solve(model::MySimulatedAnnealingMinimumVariancePortfolioAllocationProblem; 
@@ -74,38 +82,69 @@ function solve(model::MySimulatedAnnealingMinimumVariancePortfolioAllocationProb
         accepted_counter = 0; 
         
         # TODO: Implement simulated annealing logic here -
-        throw(ErrorException("Oooops! Simulated annealing logic not yet implemented!!"));
-
-        # update KL -
-        fraction_accepted = accepted_counter/KL; # what is the fraction of accepted moves
-        
-        # Case 1: we are accepting alot, so decrease the number of iterations
-        if (fraction_accepted > 0.8)
-            KL = ceil(Int, 0.75*KL);
-        end
-
-        # Case 2: not accepting many moves, so increase the number of iteratons
-        if (fraction_accepted < 0.2)
-            KL = ceil(Int, 1.5*KL);
-        end
-
-        # update penalty parameters and T -
-        μ *= τ*μ;
-        ρ *= τ*ρ;
-
-        if (T ≤ T₁)
-            has_converged = true;
-        else
-            T *= (α*T); # Not done yet, so decrease the T -
-        end
-    end
-
-    # update the model with the optimal weights -
-    model.w = w_best;
-
-    # return the model -
-    return model;
+         d = length(w)
++        min_eps = 1e-12
++
++        for k in 1:KL
++            # propose candidate by Gaussian perturbation
++            candidate = current_w .+ β .* randn(d)
++
++            # enforce a tiny positive floor (helps numerical stability / log barrier)
++            candidate = max.(candidate, min_eps)
++
++            # evaluate objective
++            f_candidate = _objective_function(candidate, ḡ, Σ̂, R, μ, ρ)
++
++            # acceptance: accept if better, otherwise with Metropolis probability
++        
++            if f_candidate <= current_f
++                accept = true
++            else
++                Δ = f_candidate - current_f
++                accept_prob = exp(-Δ / max(T, 1e-16))
++                accept = rand() < accept_prob
++            end
++
++            if accept
++                current_w = candidate
++                current_f = f_candidate
++                accepted_counter += 1
++
++                # record best
++                if current_f < f_best
++                    w_best = copy(current_w)
++                    f_best = current_f
++                end
++            end
++        end
++
++        # adapt KL based on acceptance rate
++        fraction_accepted = accepted_counter / max(KL, 1)
++        if fraction_accepted > 0.8
++            KL = max(10, ceil(Int, 0.75 * KL))
++        elseif fraction_accepted < 0.2
++            KL = ceil(Int, 1.5 * KL)
++        end
++
++        # update penalty parameters
++        μ *= τ
++        ρ *= τ
++
++        # cooling schedule
++        if T <= T₁
++            has_converged = true
++        else
++            T *= α
++        end
++
++        if verbose
++            @info "SA step" T=T KL=KL fraction_accepted=fraction_accepted f_best=f_best
++        end
+# update model and return
+    model.w = w_best
+    return model
 end
+
 
 """
     function solve(problem::MyMarkowitzRiskyAssetOnlyPortfolioChoiceProblem) -> Dict{String,Any}
